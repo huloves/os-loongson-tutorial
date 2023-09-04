@@ -205,6 +205,8 @@ os-loongson/qemu$ ./qemu-system-loongarch64 -m 4G -smp 1 -bios ./loongarch_bios_
 * 访问存储类型
 * 控制状态寄存器（CSR）
 
+先介绍一下龙芯架构的内容，然后开始写代码进行实践。
+
 #### 2.2.1 特权等级
 
 龙芯架构中处理器核分为 4 个特权等级（Privilege LeVel，简称 PLV），分别是 PLV0\~PLV3。所有特权等级中，PLV0 是具有最高权限的特权等级，也是唯一可以使用特权指令并访问所有特权资源的特权等级。
@@ -237,3 +239,284 @@ os-loongson/qemu$ ./qemu-system-loongarch64 -m 4G -smp 1 -bios ./loongarch_bios_
 #### 2.2.4 控制状态寄存器（CSR）
 
 特权资源中非常重要的是控制状态寄存器，控制状态寄存器控制着系统的状态。控制状态寄存器拥有独立的空间，在龙芯架构参考手册中的第 7.1 节中有控制状态寄存器的地址及其名称。访问控制状态寄存器使用 csrrd 指令、csrwr 指令和 csrchg 指令。在后面遇到某一个控制状态寄存器时再展开讲述其内容。
+
+#### 2.2.5 LoongArch 汇编部分内容
+
+* 访存指令：st、ld
+* 访问控制状态寄存器指令：csrrd、csrwr
+* 跳转指令：b
+* 运算指令：add
+* 加载地址：la
+* 加载立即数：li
+
+#### 2.2.6 内核运行环境确定性设置及传递启动参数
+
+开始使用汇编语言了，就会使用到通用寄存器。龙芯架构的通用寄存器有 32 个，记为 r0 \~ r31。LA32 中每个寄存器为 32 位宽， LA64 中每个寄存器为 64 位宽。r0 的内容总是固定为 0，而其他寄存器在体系结构层面没有特殊功能。（ r1 算是一个例外，在 BL 指令中固定用作链接返回寄存器。）
+
+虽然大多通用寄存器在体系结构层面没有特殊功能，但是我们使用的工具链符合 LoongArch ELF psABI 规范，该规范中对通用寄存器的使用进行了约定，约定如下：
+
+<table><thead><tr><th width="177">寄存器名</th><th width="162">别名</th><th width="178">用途</th><th>跨调用保持</th></tr></thead><tbody><tr><td><code>$r0</code></td><td><code>$zero</code></td><td>常量0</td><td>不使用</td></tr><tr><td><code>$r1</code></td><td><code>$ra</code></td><td>返回地址</td><td>否</td></tr><tr><td><code>$r2</code></td><td><code>$tp</code></td><td>TLS/线程信息指针</td><td>不使用</td></tr><tr><td><code>$r3</code></td><td><code>$sp</code></td><td>栈指针</td><td>是</td></tr><tr><td><code>$r4</code>-<code>$r11</code></td><td><code>$a0</code>-<code>$a7</code></td><td>参数寄存器</td><td>否</td></tr><tr><td><code>$r4</code>-<code>$r5</code></td><td><code>$v0</code>-<code>$v1</code></td><td>返回值</td><td>否</td></tr><tr><td><code>$r12</code>-<code>$r20</code></td><td><code>$t0</code>-<code>$t8</code></td><td>临时寄存器</td><td>否</td></tr><tr><td><code>$r21</code></td><td><code>$u0</code></td><td>每CPU变量基地址</td><td>不使用</td></tr><tr><td><code>$r22</code></td><td><code>$fp</code></td><td>帧指针</td><td>是</td></tr><tr><td><code>$r23</code>-<code>$r31</code></td><td><code>$s0</code>-<code>$s8</code></td><td>静态寄存器</td><td>是</td></tr></tbody></table>
+
+龙芯架构的通用寄存器汇编中使用龙芯架构的通用寄存器时，使用 `$r0` \~ `$r31` 这样的命名方式。为了方便通用寄存器的理解和使用，先用C语言的宏定义将寄存器名和别名关联起来：
+
+```c
+/* os-elephant-dev/include/regdef.h */
+#ifndef _REGDEF_H
+#define _REGDEF_H
+
+#define zero	$r0	/* 常量0 */
+#define ra	$r1	/* 返回地址 */
+#define tp	$r2
+#define sp	$r3	/* 栈指针 */
+#define a0	$r4	/* 参数寄存器, a0/a1重用为v0/v1, 作为返回值 */
+#define a1	$r5
+#define a2	$r6
+#define a3	$r7
+#define a4	$r8
+#define a5	$r9
+#define a6	$r10
+#define a7	$r11
+#define t0	$r12	/* 临时寄存器, 调用者保存, 函数内直接使用 */
+#define t1	$r13
+#define t2	$r14
+#define t3	$r15
+#define t4	$r16
+#define t5	$r17
+#define t6	$r18
+#define t7	$r19
+#define t8	$r20
+#define u0	$r21
+#define fp	$r22	/* 帧指针 */
+#define s0	$r23	/* 静态寄存器, 子程序使用需要保存和恢复 */
+#define s1	$r24
+#define s2	$r25
+#define s3	$r26
+#define s4	$r27
+#define s5	$r28
+#define s6	$r29
+#define s7	$r30
+#define s8	$r31
+
+#endif /* _ASM_REGDEF_H */
+```
+
+所有的通用寄存器这样就使用 C 语言宏，将寄存器名和别名做了关联。接下来将马上要使用到的控制状态寄存器也用 C 语言宏表示出来。
+
+```c
+#ifndef _LOONGARCH_H
+#define _LOONGARCH_H
+
+#define LONGSIZE	8
+
+#define DMW_PABITS	48
+
+#ifdef __ASSEMBLY__
+#define _CONST64_(x)	x
+#else
+#define _CONST64_(x)	x ## L
+#endif
+
+/* Basic CSR registers */
+#define LOONGARCH_CSR_CRMD		0x0	/* 当前模式信息 */
+#define LOONGARCH_CSR_PRMD		0x1	/* 例外前模式信息 */
+#define LOONGARCH_CSR_EUEN		0x2	/* 扩展部件使能 */
+
+/* KSave registers */
+#define LOONGARCH_CSR_KS0		0x30
+#define LOONGARCH_CSR_KS1		0x31
+#define LOONGARCH_CSR_KS2		0x32
+#define LOONGARCH_CSR_KS3		0x33
+#define LOONGARCH_CSR_KS4		0x34
+#define LOONGARCH_CSR_KS5		0x35
+#define LOONGARCH_CSR_KS6		0x36
+#define LOONGARCH_CSR_KS7		0x37
+#define LOONGARCH_CSR_KS8		0x38
+
+/* Percpu-data base allocated KS3 statically */
+#define PERCPU_BASE_KS			LOONGARCH_CSR_KS3
+
+/* Direct Map windows registers */
+#define LOONGARCH_CSR_DMWIN0		0x180	/* 直接映射配置窗口0 */
+#define LOONGARCH_CSR_DMWIN1		0x181	/* 直接映射配置窗口1 */
+
+/* 直接映射配置窗口0/1的配置 */
+#define CSR_DMW0_PLV0		_CONST64_(1 << 0)
+#define CSR_DMW0_VSEG		_CONST64_(0x8000)
+#define CSR_DMW0_BASE		(CSR_DMW0_VSEG << DMW_PABITS)
+#define CSR_DMW0_INIT		(CSR_DMW0_BASE | CSR_DMW0_PLV0)
+
+#define CSR_DMW1_PLV0		_CONST64_(1 << 0)
+#define CSR_DMW1_MAT		_CONST64_(1 << 4)
+#define CSR_DMW1_VSEG		_CONST64_(0x9000)
+#define CSR_DMW1_BASE		(CSR_DMW1_VSEG << DMW_PABITS)
+#define CSR_DMW1_INIT		(CSR_DMW1_BASE | CSR_DMW1_MAT | CSR_DMW1_PLV0)
+
+#endif /* _LOONGARCH_H */
+```
+
+暂时用到的寄存器就已经表示完了，接下来开始编写启动设置寄存器的代码。编写 os-loongson/os-elephant-dev/boot/loongarch/head.S 文件：
+
+<pre class="language-c" data-full-width="false"><code class="lang-c"><strong>/* os-loongson/os-elephant-dev/boot/loongarch/head.S */
+</strong>#include &#x3C;regdef.h>
+#include &#x3C;loongarch.h>
+#include &#x3C;bootinfo.h>
+
+.section ".head.text","ax"
+
+	.align 12
+
+.global kernel_entry
+<strong>kernel_entry:
+</strong>	/** 
+	 * 配置直接映射窗口
+	 * 设置CRMD.PG位
+	 */
+	li.d		t0, CSR_DMW1_INIT	# 一致可缓存（Coherent Cached，CA）存储访问类型，PLV0下可以使用该窗口的配置进行直接映射地址翻译，地址窗口为0x9000 xxxx xxxx xxxx
+	csrwr		t0, LOONGARCH_CSR_DMWIN1
+
+	/* Enable PG */
+	li.w		t0, 0xb0		# 1011 0000, PLV=0, IE=0, PG=1, DATF=1
+	csrwr		t0, LOONGARCH_CSR_CRMD
+	li.w		t0, 0x04		# 0000 0100, PLV=0, PIE=1, PWE=0
+	csrwr		t0, LOONGARCH_CSR_PRMD
+	li.w		t0, 0x00		# 0000 0000, FPE=0, SXE=0, ASXE=0, BTE=0, 不使用扩展
+	csrwr		t0, LOONGARCH_CSR_EUEN
+
+	la.pcrel	t0, __bss_start		# 清空.bss段
+	st.d		zero, t0, 0
+	la.pcrel	t1, __bss_stop
+1:
+	addi.d		t0, t0, LONGSIZE
+	st.d		zero, t0, 0
+	bne		t0, t1, 1b
+
+	/**
+	 * 保存固件传递的参数
+	 */
+	la.pcrel	t0, fw_arg0
+	st.d		a0, t0, 0
+	la.pcrel	t0, fw_arg1
+	st.d		a1, t0, 0
+	la.pcrel	t0, fw_arg2
+	st.d		a2, t0, 0
+
+	/* KSave3 used for percpu base, initialized as 0 */
+	csrwr		zero, PERCPU_BASE_KS
+	/* GPR21 used for percpu base (runtime), initialized as 0 */
+	move		u0, zero
+
+	la.pcrel	tp, init_thread_union
+	/* Set the SP after an empty pt_regs.  */
+	li.d		sp, (KERNEL_STACK_SIZE - PT_SIZE)
+	add.d		sp, sp, tp
+	/* set_saved_sp	sp, t0, t1 */
+	la.abs		t0, kernelsp
+	st.d		sp, t0, 0
+
+	bl		init_all
+</code></pre>
+
+上面用到的一些变量定义在 setup.c 或者链接脚本中，使用 bootinfo.h 文件向外部提供。
+
+bootinfo.h 文件的内容如下：
+
+<pre class="language-c"><code class="lang-c"><strong>/* os-loongson/os-elephant-dev/include/bootinfo.h */
+</strong><strong>#ifndef _BOOTINFO_H
+</strong>#define _BOOTINFO_H
+
+#define KERNEL_STACK_SIZE	0x00004000   // 16K
+#define PT_SIZE			328
+
+#ifndef __ASSEMBLY__
+
+extern unsigned long fw_arg0, fw_arg1, fw_arg2;
+extern unsigned long kernelsp;
+
+union thread_union {
+	unsigned long stack[KERNEL_STACK_SIZE / sizeof(unsigned long)];
+};
+
+extern union thread_union init_thread_union;
+
+extern unsigned long init_stack[KERNEL_STACK_SIZE / sizeof(unsigned long)];
+
+#endif /* !__ASSEMBLY__ */
+
+#endif /* _BOOTINFO_H */
+</code></pre>
+
+setup.c 文件的内容如下：
+
+```c
+/* os-loongson/os-elephant-dev/boot/loongarch/setup.c */
+#include <bootinfo.h>
+
+unsigned long fw_arg0, fw_arg1, fw_arg2;
+unsigned long kernelsp;
+```
+
+修改 kernel.ld 文件的内容如下：
+
+```c
+/* os-loongson/os-elephant-dev/script/kernel.ld */
+ENTRY(kernel_entry)   /* 设置入口点 */
+SECTIONS
+{
+        . = 0x9000000000200000;
+        _start = .;
+        .head.text : {
+                KEEP(*(.head.text))
+        }
+	.text : {
+		*(.text)
+		. = ALIGN(4096);
+	}
+	.data : {
+                __start_init_task = .;
+                init_thread_union = .; 
+                init_stack = .;
+                . = __start_init_task + 0x00004000;
+		*(.data)
+		*(.rodata)
+		. = ALIGN(8192);
+	}
+        __bss_start = .;
+	.bss : {
+		*(.bss)
+		. = ALIGN(4096);
+	}
+        __bss_stop = .;
+	.stab : {
+		*(.stab)
+		. = ALIGN(8192);
+	}
+	.data.init_task : {
+                *(.data.init_task)
+                . = ALIGN(8192);
+        }
+	_end = .;
+}
+```
+
+修改 makefile 文件：
+
+```makefile
+OBJS = $(BUILD_DIR)/head.o $(BUILD_DIR)/init.o $(BUILD_DIR)/setup.o
+
+$(BUILD_DIR)/head.o: boot/loongarch/head.S
+	$(CC) $(AFLAGS) $< -o $@
+
+$(BUILD_DIR)/setup.o: boot/loongarch/setup.c
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/init.o: kernel/init.c
+	$(CC) $(CFLAGS) $< -o $@
+```
+
+在 os-loongson/os-elephant\_dev/ 目录下编译，然后到 os-loongson/qemu/ 目录下运行：
+
+```bash
+os-loongson/os-elephant_dev$ make all
+os-loongson/os-elephant_dev$ cd ../qemu/
+os-loongson/qemu$ ./qemu-system-loongarch64 -m 4G -smp 1 -bios ./loongarch_bios_0310_debug.bin -vga none -nographic -kernel ../os-elephant-dev/build/kernel.elf
+```
