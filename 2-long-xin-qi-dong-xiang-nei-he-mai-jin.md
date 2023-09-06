@@ -108,7 +108,7 @@ ENTRY(init_all)   /* 设置入口点 */
 SECTIONS
 {
         . = 0x0000000000200000;
-	_start = .;
+	PROVIDE( _start = . );
         .head.text : {
                 KEEP(*(.head.text))
         }
@@ -116,6 +116,7 @@ SECTIONS
 		*(.text)
 		. = ALIGN(4096);
 	}
+	. = ALIGN(1 << 12);
 	.data : {
                 __start_init_task = .;
                 init_thread_union = .; 
@@ -125,21 +126,15 @@ SECTIONS
 		*(.rodata)
 		. = ALIGN(8192);
 	}
+	. = ALIGN(1 << 12);
         __bss_start = .;
 	.bss : {
 		*(.bss)
 		. = ALIGN(4096);
 	}
         __bss_stop = .;
-	.stab : {
-		*(.stab)
-		. = ALIGN(8192);
-	}
-	.data.init_task : {
-                *(.data.init_task)
-                . = ALIGN(8192);
-        }
-	_end = .;
+	. = ALIGN(1 << 12);
+	PROVIDE( _end = . );
 }
 ```
 
@@ -356,33 +351,38 @@ os-loongson/qemu$ ./qemu-system-loongarch64 -m 4G -smp 1 -bios ./loongarch_bios_
 
 暂时用到的寄存器就已经表示完了，接下来开始编写启动设置寄存器的代码。编写 os-loongson/os-elephant-dev/boot/loongarch/head.S 文件：
 
-<pre class="language-c" data-full-width="false"><code class="lang-c"><strong>/* os-loongson/os-elephant-dev/boot/loongarch/head.S */
-</strong>#include &#x3C;regdef.h>
-#include &#x3C;loongarch.h>
-#include &#x3C;bootinfo.h>
+{% code fullWidth="false" %}
+```c
+#include <regdef.h>
+#include <loongarch.h>
+#include <bootinfo.h>
 
 .section ".head.text","ax"
 
 	.align 12
 
 .global kernel_entry
-<strong>kernel_entry:
-</strong>	/** 
-	 * 配置直接映射窗口
-	 * 设置CRMD.PG位
-	 */
-	li.d		t0, CSR_DMW1_INIT	# 一致可缓存（Coherent Cached，CA）存储访问类型，PLV0下可以使用该窗口的配置进行直接映射地址翻译，地址窗口为0x9000 xxxx xxxx xxxx
+kernel_entry:
+	/* Config direct window and set PG */
+	li.d		t0, CSR_DMW0_INIT	# UC, PLV0, 0x8000 xxxx xxxx xxxx
+	csrwr		t0, LOONGARCH_CSR_DMWIN0
+	li.d		t0, CSR_DMW1_INIT	# CA, PLV0, 0x9000 xxxx xxxx xxxx
 	csrwr		t0, LOONGARCH_CSR_DMWIN1
 
+	/* We might not get launched at the address the kernel is linked to,
+	   so we jump there.  */
+	la.abs		t0, 0f
+	jr		t0
+0:
 	/* Enable PG */
-	li.w		t0, 0xb0		# 1011 0000, PLV=0, IE=0, PG=1, DATF=1
+	li.w		t0, 0xb0		# PLV=0, IE=0, PG=1
 	csrwr		t0, LOONGARCH_CSR_CRMD
-	li.w		t0, 0x04		# 0000 0100, PLV=0, PIE=1, PWE=0
+	li.w		t0, 0x04		# PLV=0, PIE=1, PWE=0
 	csrwr		t0, LOONGARCH_CSR_PRMD
-	li.w		t0, 0x00		# 0000 0000, FPE=0, SXE=0, ASXE=0, BTE=0, 不使用扩展
+	li.w		t0, 0x00		# FPE=0, SXE=0, ASXE=0, BTE=0
 	csrwr		t0, LOONGARCH_CSR_EUEN
 
-	la.pcrel	t0, __bss_start		# 清空.bss段
+	la.pcrel	t0, __bss_start		# clear .bss
 	st.d		zero, t0, 0
 	la.pcrel	t1, __bss_stop
 1:
@@ -390,11 +390,8 @@ os-loongson/qemu$ ./qemu-system-loongarch64 -m 4G -smp 1 -bios ./loongarch_bios_
 	st.d		zero, t0, 0
 	bne		t0, t1, 1b
 
-	/**
-	 * 保存固件传递的参数
-	 */
 	la.pcrel	t0, fw_arg0
-	st.d		a0, t0, 0
+	st.d		a0, t0, 0		# firmware arguments
 	la.pcrel	t0, fw_arg1
 	st.d		a1, t0, 0
 	la.pcrel	t0, fw_arg2
@@ -414,7 +411,8 @@ os-loongson/qemu$ ./qemu-system-loongarch64 -m 4G -smp 1 -bios ./loongarch_bios_
 	st.d		sp, t0, 0
 
 	bl		init_all
-</code></pre>
+```
+{% endcode %}
 
 上面用到的一些变量定义在 setup.c 或者链接脚本中，使用 bootinfo.h 文件向外部提供。
 
@@ -459,11 +457,11 @@ unsigned long kernelsp;
 
 ```c
 /* os-loongson/os-elephant-dev/script/kernel.ld */
-ENTRY(kernel_entry)   /* 设置入口点 */
+ENTRY(init_all)   /* 设置入口点 */
 SECTIONS
 {
-        . = 0x9000000000200000;
-        _start = .;
+        . = 0x0000000000200000;
+	PROVIDE( _start = . );
         .head.text : {
                 KEEP(*(.head.text))
         }
@@ -471,6 +469,7 @@ SECTIONS
 		*(.text)
 		. = ALIGN(4096);
 	}
+	. = ALIGN(1 << 12);
 	.data : {
                 __start_init_task = .;
                 init_thread_union = .; 
@@ -480,21 +479,15 @@ SECTIONS
 		*(.rodata)
 		. = ALIGN(8192);
 	}
+	. = ALIGN(1 << 12);
         __bss_start = .;
 	.bss : {
 		*(.bss)
 		. = ALIGN(4096);
 	}
         __bss_stop = .;
-	.stab : {
-		*(.stab)
-		. = ALIGN(8192);
-	}
-	.data.init_task : {
-                *(.data.init_task)
-                . = ALIGN(8192);
-        }
-	_end = .;
+	. = ALIGN(1 << 12);
+	PROVIDE( _end = . );
 }
 ```
 
