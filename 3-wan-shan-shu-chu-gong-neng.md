@@ -309,3 +309,121 @@ void init_all()
 	// filesys_init();   // 初始化文件系统
 }
 ```
+
+### 3.2 printk函数
+
+> 主要解决编译问题，描述提供思路，具体问题具体分析。
+
+首先实现字符串处理函数，这里直接使用原 os-elephant-dev 的文件就可以，即 `lib/string.c`。为了简单起见，将该文件中的assert函数注释掉，然后调整该文件的头文件部分。调整完之后在 makefile 文件中加入编译 string.c。
+
+```c
+#include "string.h"
+#ifdef CONFIG_LOONGARCH64
+#include "stdint.h"
+#else
+#include "global.h"
+#include "assert.h"
+#endif
+```
+
+有关可变参数的宏这里要做些修改，下面给出正确的写法，直接使用内建函数：
+
+```c
+#define va_start(v, l)	__builtin_va_start(v, l)
+#define va_end(v)	__builtin_va_end(v)
+#define va_arg(v, T)	__builtin_va_arg(v, T)
+```
+
+然后修改有关可变参数宏的代码，相关文件有 lib/kernel/stdio-kernel.c 和 lib/stdio.c。
+
+```c
+/* lib/kernel/stdio-kernel.c */
+#ifndef CONFIG_LOONGARCH64
+#define va_start(args, first_fix) args = (va_list)&first_fix
+#define va_end(args) args = NULL
+#else
+#define va_start(v, l)	__builtin_va_start(v, l)
+#define va_end(v)	__builtin_va_end(v)
+#endi
+```
+
+```c
+/* lib/stdio.c */
+#ifndef CONFIG_LOONGARCH64
+#define va_start(ap, v) ap = (va_list)&v  // 把ap指向第一个固定参数v
+#define va_arg(ap, t) *((t*)(ap += 4))	  // ap指向下一个参数并返回其值
+#define va_end(ap) ap = NULL		  // 清除ap
+#else
+
+#define va_start(v, l)	__builtin_va_start(v, l)
+#define va_end(v)	__builtin_va_end(v)
+#define va_arg(v, T)	__builtin_va_arg(v, T)
+
+#endi
+```
+
+两个文件一样要调整头文件部分：
+
+<pre class="language-c"><code class="lang-c"><strong>/* lib/kernel/stdio-kernel.c */
+</strong><strong>#include "stdio-kernel.h"
+</strong>#include "stdio.h"
+
+#ifndef CONFIG_LOONGARCH64
+#include "print.h"
+#include "console.h"
+#include "global.h"
+#else
+#include &#x3C;ns16550a.h>
+#endif
+</code></pre>
+
+<pre class="language-c"><code class="lang-c">/* lib/stdio.c */
+<strong>#include "stdio.h"
+</strong>#include "string.h"
+#ifndef CONFIG_LOONGARCH64
+#include "interrupt.h"
+#include "global.h"
+#include "syscall.h"
+#include "print.h"
+#else
+#include "ns16550a.h"
+#endif
+</code></pre>
+
+然后在 makefile 文件中加入 lib/kernel/stdio-kernel.c 和 lib/stdio.c 的编译命令。
+
+最后在 init\_all 函数中进行测试：
+
+```c
+/* kernel/init.c */
+#include "stdio-kernel.h"   // 添加函数声明
+
+void init_all()
+{
+	char str[] = "os-loongson";
+	int a = 1, b = 16;
+#ifdef CONFIG_LOONGARCH64
+	serial_ns16550a_init(9600);
+	put_str("hello os-loongson\n");
+#endif
+	put_str("init_all\n");
+	printk("hello %s-%c%d.%d\n", str, 'v', 0, a);
+	printk("init_all: 0x%x\n", b);
+	while(1);
+	// idt_init();	     // 初始化中断
+	// mem_init();	     // 初始化内存管理系统
+	// thread_init();    // 初始化线程相关结构
+	// timer_init();     // 初始化PIT
+	// console_init();   // 控制台初始化最好放在开中断之前
+	// keyboard_init();  // 键盘初始化
+	// tss_init();       // tss初始化
+	// syscall_init();   // 初始化系统调用
+	// intr_enable();    // 后面的ide_init需要打开中断
+	// ide_init();	     // 初始化硬盘
+	// filesys_init();   // 初始化文件系统
+}
+```
+
+运行截图：
+
+<figure><img src=".gitbook/assets/WX20230910-234517.png" alt=""><figcaption></figcaption></figure>
