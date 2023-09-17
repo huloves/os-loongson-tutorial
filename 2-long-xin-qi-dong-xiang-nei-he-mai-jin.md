@@ -298,6 +298,7 @@ os-loongson/qemu$ ./qemu-system-loongarch64 -m 4G -smp 1 -bios ./loongarch_bios_
 所有的通用寄存器这样就使用 C 语言宏，将寄存器名和别名做了关联。接下来将马上要使用到的控制状态寄存器也用 C 语言宏表示出来。
 
 ```c
+/* os-elephant-dev/include/loongarch.h */
 #ifndef _LOONGARCH_H
 #define _LOONGARCH_H
 
@@ -353,6 +354,7 @@ os-loongson/qemu$ ./qemu-system-loongarch64 -m 4G -smp 1 -bios ./loongarch_bios_
 
 {% code fullWidth="false" %}
 ```c
+/* os-loongson/os-elephant-dev/boot/loongarch/head.S */
 #include <regdef.h>
 #include <loongarch.h>
 #include <bootinfo.h>
@@ -418,9 +420,10 @@ kernel_entry:
 
 bootinfo.h 文件的内容如下：
 
-<pre class="language-c"><code class="lang-c"><strong>/* os-loongson/os-elephant-dev/include/bootinfo.h */
-</strong><strong>#ifndef _BOOTINFO_H
-</strong>#define _BOOTINFO_H
+```c
+/* os-loongson/os-elephant-dev/include/bootinfo.h */
+#ifndef _BOOTINFO_H
+#define _BOOTINFO_H
 
 #define KERNEL_STACK_SIZE	0x00004000   // 16K
 #define PT_SIZE			328
@@ -441,7 +444,7 @@ extern unsigned long init_stack[KERNEL_STACK_SIZE / sizeof(unsigned long)];
 #endif /* !__ASSEMBLY__ */
 
 #endif /* _BOOTINFO_H */
-</code></pre>
+```
 
 setup.c 文件的内容如下：
 
@@ -460,7 +463,7 @@ unsigned long kernelsp;
 ENTRY(init_all)   /* 设置入口点 */
 SECTIONS
 {
-        . = 0x0000000000200000;
+        . = 0x9000000000200000;
 	PROVIDE( _start = . );
         .head.text : {
                 KEEP(*(.head.text))
