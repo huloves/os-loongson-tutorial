@@ -1,6 +1,6 @@
 # 4 中断处理
 
-图图图图中断处理过程中断处理对现代操作系统有着至关重要的作用，是多任务调度和人机高效交互的基础。操作系统的中断处理需要一个中断源，这个中断源就是硬件提供的，所以中断处理流程中硬件的处理流程也至关重要。由于涉及到硬件，不同架构会有不同的处理规范。在龙芯架构下，需要遵循龙芯中断处理的规范。所以本章将会首先介绍龙芯架构的例外与中断，然后介绍如何获取龙芯架构的中断信息，以及如何设置中断，这就涉及龙芯架构中与中断相关的寄存器。最后实现中断处理，并用一个简单的时钟中断测试中断处理。
+中断处理过程中断处理对现代操作系统有着至关重要的作用，是多任务调度和人机高效交互的基础。操作系统的中断处理需要一个中断源，这个中断源就是硬件提供的，所以中断处理流程中硬件的处理流程也至关重要。由于涉及到硬件，不同架构会有不同的处理规范。在龙芯架构下，需要遵循龙芯中断处理的规范。所以本章将会首先介绍龙芯架构的例外与中断，然后介绍如何获取龙芯架构的中断信息，以及如何设置中断，这就涉及龙芯架构中与中断相关的寄存器。最后实现中断处理，并用一个简单的时钟中断测试中断处理。
 
 ### 4.1 龙芯架构的例外与中断概述
 
@@ -282,6 +282,8 @@ void init_all()
 
 目前已经完成了一个简单的例外与中断处理流程，接下来将其适配到os-elephant-dev上。os-elephant-dev的中断处理框架在`kernel/interrupt.c`文件中，参考该文件进行适配。
 
+#### 4.4.1 中断处理框架
+
 首先介绍一下x86架构os-elephant-dev的中断处理框架。在打开中断之前，会设置好中断描述符表。中断描述符表中的内容为各种门描述符，这里只介绍中断门。中断门描述符的结构如图4.1所示。
 
 <figure><img src=".gitbook/assets/image (4).png" alt="" width="563"><figcaption><p>图4.1 中断门描述符</p></figcaption></figure>
@@ -304,7 +306,11 @@ void init_all()
 
 本节需要的x86架构硬件知识就先说到这里，然后开始软件部分。
 
-在入口程序中保存需要保存的寄存器，然后开始中断处理，最后恢复寄存器。这里讲述一下x86架构os-elephant-dev的处理处理流程。
+在开启某个中断之前，需要先将中断处理程序注册到系统中。具体到os-elephant-dev就是将中断处理程序注册到idt\_table函数指针数组中，即将中断处理程序函数指针写入到idt\_table中。
+
+开启中断，然后在中断发生后，硬件通过**硬件中断号**找到相应的中断处理程序。在中断处理程序中保存需要保存的寄存器，然后开始中断处理。最后恢复寄存器，中断返回。
+
+这里解析一下x86架构os-elephant-dev的处理处理流程。
 
 ```c
 %macro VECTOR 2
@@ -357,7 +363,7 @@ VECTOR 0x2e,ZERO	;硬盘
 VECTOR 0x2f,ZERO	;保留
 ```
 
-解析一下上述中断处理程序。汇编语言中VECTOR定义了一个有两个参数的宏，第一个参数是中断向量号，第二个参数是是否向栈中压入一个0（若未ZERO，则压入一个0；若为ERROR\_CODE，则执行一个NOP操作）。此处存在不同是因为有的异常处理中，硬件会自动向栈中压入一个错误码。为了栈格式的统一，在硬件未压错误码的情况下，使用软件压入一个0。
+解析一下上述中断处理程序。汇编语言中VECTOR定义了一个有两个参数的宏，第一个参数是中断向量号，第二个参数是是否向栈中压入一个0（若为ZERO，则向栈中压入一个0；若为ERROR\_CODE，则执行一个NOP操作）。此处存在不同是因为有的异常处理中，硬件会自动向栈中压入一个错误码。为了栈格式的统一，在硬件未压错误码的情况下，使用软件压入一个0。
 
 每使用一个VECTOR宏就是定义一个中断处理程序，接下来解析一下每个中断处理程序。这里留下一个伏笔，注意**中断号**。首先保存中断上下文：
 
@@ -411,11 +417,15 @@ i386架构下，函数指针为32位，也就是4字节。所以通过这样的`
 
 在前面我们已经定了**硬件中断号**，**硬件中断号**和**虚拟中断号**之间存在一个映射关系，上述处理过程中，他们的映射关系是相等的映射关系。在这个映射的过程中完成了硬件到软件的过渡。在映射之前，要更多注意硬件的处理流程；在映射之后，要更多的注意软件的处理流程。在目前的大多数操作系统中都有一个中断入口的设计，这个入口完成了硬件到软件的过渡，入口中对体系结构无关代码的索引完成了硬件中断处理到软件中断处理的映射，即**硬件中断号**到**虚拟中断号**的映射。
 
-到这里笔者想讲的已经讲完了，每个人对上面的内容可能会有不同的理解。写到这里，笔者首先想到了这样一张图。
+我们用一个中断来走一遍上述内容，选用时钟中断。因为在CPU执行流之外有信息要传递到CPU，为了打断CPU执行流，使用中断来完成这个工作。现在时钟部件因为到时产生一个信号，并将该信号传递到中断控制器。计算机系统要运行起来需要系统中的各个部件协调统一的共同工作，需要协调因为他们之间是相互独立的，但为了组成一个系统，他们之间需要统一起来。控制器完成了翻译工作的同时也实现了各个部件的协调统一。此时中断控制器收到时钟部件传递来的信号，将其转换为CPU能够识别的中断信号。中断信号中需要包涵很多信息，其中就包含硬件中断号信息。将中断信号发送给CPU后，CPU就需要打断当前的执行流。CPU打断当前的执行流后，获得了时钟的硬件中断号，然后CPU通过硬件中断号找到时钟的中断处理入口程序，在中断处理入口程序中完成硬件中断号到虚拟机中断号的翻译，然后通过虚拟中断号找到系统配置的时钟中断处理程序。为协调统一，CPU也需要通知中断控制器，即发送完成中断的信号。所以在处理过程中找一个时机，向中断控制器发送一个信号。中断处理程序执行完之后，返回到CPU之前的执行流继续执行，回到发生中断前的状态。
+
+有了硬件中断号、虚拟中断号以及硬件中断号和虚拟中断号之间的映射，系统设计时就可以考虑如何管理硬件中断号和虚拟中断号及其映射。其中硬件中断号是和硬件之间的约定，通过硬件获得。获得硬件中断号后，将其与一个虚拟中断号进行映射，得到一个虚拟中断号。得到虚拟中断号后，虚拟中断号对应一个中断处理程序。通过这个流程，中断处理程序的设置就更加自由了，不用再与硬件强相关。
+
+到这里笔者想讲的已经讲完了，通过图4.4将上述内容表达出来。
 
 <figure><img src=".gitbook/assets/image.png" alt="" width="375"><figcaption><p>图4.3</p></figcaption></figure>
 
-图4.3是硬件中断号和虚拟中断号相等映射的关系，这和上述处理流程中是一样的映射关系。然后根据图4.3，想到了为图4.4。
+图4.3是硬件中断号和虚拟中断号相等映射的关系，这和上述处理流程中是一样的映射关系。然后根据图4.3，得到图4.4。
 
 <figure><img src=".gitbook/assets/image (8).png" alt="" width="563"><figcaption><p>图4.4</p></figcaption></figure>
 
@@ -431,13 +441,13 @@ $$
 virq = f(hwirq) = hwirq
 $$
 
-根据讲的这些，其实可以把映射关系变为这样：
+根据这些，如果愿意，可以把映射关系变为这样：
 
 $$
 virq = f(hwirq) = hwirq * 2
 $$
 
-在代码中就应该体现为（伪代码）：
+映射关系变成这样时，在代码中体现为（伪代码）：
 
 ```c
 call [idt_table + %1 * 2 * 4]   //初始化时也要按这个映射关系进行初始化
@@ -451,4 +461,269 @@ $$
 
 然后在代码中用一个哈希表来管理虚拟中断号的分配。
 
-再说一句，笔者认为：映射函数不是最重要的，重要的是那两个集合和他们之间的箭头。希望上述内容能够有助于理解中断处理的框架。笔者能力有限，暂时只能讲这么多，如果觉得没有必要讲这么多，不必过多追究，不影响后续内容；如果有什么地方存在纰漏或错误，欢迎指正。
+再说一句，笔者认为：映射函数本身是什么函数不是最重要的，重要的是那两个集合和他们之间的映射关系。希望上述内容能够有助于理解中断处理的框架。暂时就说这么多，本节上述内容不影响后续内容，如果有什么地方存在纰漏或错误，欢迎指正。
+
+#### 4.4.2 代码适配
+
+在`kernel/interrupt.h`文件中添加`arch_init_irq()`函数的声明。
+
+```c
+/* kernel/interrupt.h */
+#ifndef CONFIG_LOONGARCH64
+void idt_init(void);
+#else
+void arch_init_irq(void);
+#endif
+```
+
+在`kernel/irq.c`文件中包含`kernel/interrupt.h`文件。使用一个宏定义最多支持多少个例外与中断。定义一个函数指针数组，用来存储中断处理程序。定义一个字符指针数组，用来存储中断名。
+
+```c
+/* kernel/irq.c */
+#include "interrupt.h"
+
+#define INTR_NUM	256
+
+intr_handler intr_table[INTR_NUM];
+char *intr_name[INTR_NUM];
+```
+
+定义通用中断处理函数和初始化所有例外函数，并在arch\_init\_irq()函数中调用初始化函数。
+
+```c
+/* kernel/irq.c */
+static void general_intr_handler(uint8_t vec_nr)
+{
+	printk("!!!!!!!      excetion message begin  !!!!!!!!\n");
+	printk("intr_table[%d]: %s happened", intr_name[vec_nr]);
+	printk("\n!!!!!!!      excetion message end    !!!!!!!!\n");
+	while(1);
+}
+
+static void exception_init(void)
+{
+	int i;
+	for (i = 0; i < INTR_NUM; i++) {
+		intr_name[i] = "unknown";
+		intr_table[i] = general_intr_handler;
+	}
+}
+```
+
+```c
+/* kernel/irq.c */
+void arch_init_irq(void)
+{
+        unsigned int ecfg = ( 0U << CSR_ECFG_VS_SHIFT ) | 0x3fcU | (0x1 << 11);
+        unsigned long tcfg = 0x10000000UL | (1U << 0) | (1U << 1);
+
+        clear_csr_ecfg(ECFG0_IM);
+	clear_csr_estat(ESTATF_IP);
+
+	write_csr_ecfg(ecfg);
+	write_csr_eentry((unsigned long)trap_entry);
+
+	write_csr_tcfg(tcfg);
+
+	exception_init();
+
+	printk("arch_init_irq done\n");
+}
+```
+
+编写获取中断状态函数、修改打开中断函数和关闭中断函数：
+
+```c
+/* kernel/irq.c */
+enum intr_status intr_get_status(void)
+{
+	uint64_t crmd;
+
+	crmd = read_csr_crmd();
+
+	return (crmd & CSR_CRMD_IE) ? INTR_ON : INTR_OFF;
+}
+
+static inline void arch_local_irq_enable(void)
+{
+	uint32_t val = CSR_CRMD_IE;
+	__asm__ __volatile__(
+		"csrxchg %[val], %[mask], %[reg]\n\t"
+		: [val] "+r" (val)
+		: [mask] "r" (CSR_CRMD_IE), [reg] "i" (LOONGARCH_CSR_CRMD)
+		: "memory");
+}
+
+static inline void arch_local_irq_disable(void)
+{
+	uint32_t val = 0;
+	__asm__ __volatile__(
+		"csrxchg %[val], %[mask], %[reg]\n\t"
+		: [val] "+r" (val)
+		: [mask] "r" (CSR_CRMD_IE), [reg] "i" (LOONGARCH_CSR_CRMD)
+		: "memory");
+}
+```
+
+仿照x86架构os-elephant-dev编写intr\_enable()函数、intr\_disable()和intr\_set\_status()函数：
+
+```c
+/* kernel/irq.c */
+
+/* 开中断并返回开中断前的状态*/
+enum intr_status intr_enable(void)
+{
+	enum intr_status old_status;
+
+	if (intr_get_status() == INTR_ON) {
+		old_status = INTR_ON;
+	} else {
+		old_status = INTR_OFF;
+		arch_local_irq_enable();
+	}
+
+	return old_status;
+}
+
+/* 关中断并返回关中断前的状态 */
+enum intr_status intr_disable(void)
+{
+	enum intr_status old_status;
+
+	if (intr_get_status() == INTR_ON) {
+		old_status = INTR_ON;
+		arch_local_irq_disable();
+	} else {
+		old_status = INTR_OFF;
+	}
+
+	return old_status;
+}
+
+/* 将中断状态设置为status */
+enum intr_status intr_set_status(enum intr_status status)
+{
+	return status & INTR_ON ? intr_enable() : intr_disable();
+}
+```
+
+编写中断处理注册函数和执行中断处理函数：
+
+```c
+/* kernel/irq.c */
+void register_handler(uint8_t vector_no, intr_handler function)
+{
+	intr_table[vector_no] = function;
+}
+
+void do_irq(uint64_t irq)
+{
+	intr_table[irq](irq);
+}
+```
+
+修改trap\_handler()函数：
+
+```c
+/* kernel/irq.c */
+void trap_handler(void)
+{
+	unsigned int estat = read_csr_estat();
+	unsigned int ecfg = read_csr_ecfg();
+	unsigned long era = read_csr_era();
+	unsigned long prmd = read_csr_prmd();
+	unsigned long irq;
+
+	if((prmd & CSR_PRMD_PPLV) != 0)
+		put_str("kerneltrap: not from privilege0");
+	if(intr_get() != 0)
+		put_str("kerneltrap: interrupts enabled");
+
+	if (estat & ecfg & (0x1 << 11)) {
+		irq = 64 + 11;
+		// timer_interrupt();
+	} else if (estat & ecfg) {
+		printk("estat %x, ecfg %x\n", estat, ecfg);
+		printk("era=%p eentry=%p\n", read_csr_era(), read_csr_eentry());
+		while(1);
+	}
+
+	do_irq(irq);
+
+	write_csr_era(era);
+	write_csr_prmd(prmd);
+}
+```
+
+重新编写一下时钟中断处理程序：
+
+```c
+/* kernel/irq.c */
+void timer_interrupt(uint8_t vec_nr)
+{
+	printk("intr_table[%d]: timer interrupt\n", vec_nr);
+	/* ack */
+	write_csr_ticlr(read_csr_ticlr() | (0x1 << 0));
+}
+```
+
+在arch\_init\_irq()函数中使用register\_handler()函数注册时钟中断处理函数：
+
+```c
+/* kernel/irq.c */
+void arch_init_irq(void)
+{
+        unsigned int ecfg = ( 0U << CSR_ECFG_VS_SHIFT ) | 0x3fcU | (0x1 << 11);
+        unsigned long tcfg = 0x10000000UL | (1U << 0) | (1U << 1);
+
+        clear_csr_ecfg(ECFG0_IM);
+	clear_csr_estat(ESTATF_IP);
+
+	write_csr_ecfg(ecfg);
+	write_csr_eentry((unsigned long)trap_entry);
+
+	write_csr_tcfg(tcfg);
+
+	exception_init();
+	register_handler(64 + 11, timer_interrupt);
+
+	printk("arch_init_irq done\n");
+}
+```
+
+在`kernel/init.c`文件中的`init()`函数打开中断：
+
+```c
+/* kernel/init.c */
+#include "interrupt.h"
+
+void init_all()
+{
+	char str[] = "os-loongson";
+	int a = 1, b = 16;
+#ifdef CONFIG_LOONGARCH64
+	serial_ns16550a_init(9600);
+	put_str("hello os-loongson\n");
+#endif
+	put_str("init_all\n");
+	printk("hello %s-%c%d.%d\n", str, 'v', 0, a);
+	printk("init_all: 0x%x\n", b);
+#ifndef CONFIG_LOONGARCH64
+	idt_init();	     // 初始化中断
+#else
+	arch_init_irq();
+	intr_enable();
+#endif
+	while(1);
+	// mem_init();	     // 初始化内存管理系统
+	// thread_init();    // 初始化线程相关结构
+	// timer_init();     // 初始化PIT
+	// console_init();   // 控制台初始化最好放在开中断之前
+	// keyboard_init();  // 键盘初始化
+	// tss_init();       // tss初始化
+	// syscall_init();   // 初始化系统调用
+	// intr_enable();    // 后面的ide_init需要打开中断
+	// ide_init();	     // 初始化硬盘
+	// filesys_init();   // 初始化文件系统
+}
+```
