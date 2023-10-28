@@ -52,7 +52,7 @@
 
 <table><thead><tr><th width="138" align="center">位</th><th width="79" align="center">名字</th><th width="80" align="center">读写</th><th>描述</th></tr></thead><tbody><tr><td align="center">11:0</td><td align="center">0</td><td align="center">R</td><td>只读恒为 0，写被忽略。</td></tr><tr><td align="center">GRLEN-1:12</td><td align="center">PC</td><td align="center">RW</td><td>普通例外和中断入口地址所在页的页号。</td></tr></tbody></table>
 
-### 4.2 龙芯例外和中断处理流程
+### 4.2 龙芯例外与中断处理流程
 
 #### 4.2.1 例外处理流程
 
@@ -71,7 +71,7 @@
 
 各中断源发来的中断信号被处理器采样至 CSR.ESTAT.IS 域中，这些信息与软件配置在 CSR.ECFG.LIE 域中的局部中断使能信息按位与，得到一个 13 位中断向量 int\_vec。当 CSR.CRMD.IE=1 且 int\_vec 不为全 0 时，处理器认为有需要响应的中断，于是从执行的指令流中挑选出一条指令，将其标记上一种特殊的例外，即中断例外。随后处理器硬件的处理过程与普通例外的处理过程一样。
 
-### 4.3 编写例外中断处理程序
+### 4.3 编写例外与中断处理程序
 
 #### 4.3.1 例外与中断初始化配置
 
