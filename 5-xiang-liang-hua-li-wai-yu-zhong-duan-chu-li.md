@@ -597,9 +597,17 @@ vector_table:
 	PTR	handle_vint_13
 ```
 
-然后将该文件写入Makefile。
+然后将该文件写入Makefile，该文件是汇编文件，编译选项使用AFLAGS。
+
+```makefile
+# Makefile
+$(BUILD_DIR)/genex.o: loongarch/genex.S
+	$(CC) $(AFLAGS) $< -o $@
+```
 
 为了能够将本项目的代码方便移植到其他项目，当体系结构相关文件放在 os-elephant-dev/loongarch/ 目录下，与龙芯架构相关的头文件都在 include/ 目录下。将setup.h文件移到 os-elephant-dev/loongarch/ 目录下，并在`setup_arch`函数中写上例外与中断初始化的接口。
+
+移动后修改Makefile中编译setup.o时的依赖。
 
 ```c
 /* include/setup.h */
@@ -611,6 +619,8 @@ vector_table:
 extern void set_handler(unsigned long offset, void *addr, unsigned long len);
 
 extern void per_cpu_trap_init(int cpu);
+extern void setup_arch(void);
+extern void trap_init(void);
 
 #endif /* _SETUP_H */
 ```
@@ -632,10 +642,23 @@ void setup_arch(void)
 }
 ```
 
+```makefile
+# Makefile
+$(BUILD_DIR)/setup.o: loongarch/setup.c
+	$(CC) $(CFLAGS) $< -o $@
+```
+
 per\_cpu\_trap\_init()函数实现如下所示：
 
 ```c
 /* loongarch/trap.c */
+#include <setup.h>
+#include <loongarch.h>
+#include <pt_regs.h>
+#include <cacheflush.h>
+#include <stdio-kernel.h>
+#include <string.h>
+
 #define SZ_64K		0x00010000
 
 /**
@@ -684,3 +707,224 @@ void per_cpu_trap_init(int cpu)
 }
 ```
 
+loongarch/trap.c文件是一个新增文件，添加到Makefile中。在包含头文件时还包含了cacheflush.h文件，该文件的实现如下所示：
+
+```c
+/* include/cacheflush.h */
+#ifndef _CACHEFLUSH_H
+#define _CACHEFLUSH_H
+
+void local_flush_icache_range(unsigned long start, unsigned long end);
+
+#endif /* _CACHEFLUSH_H */
+```
+
+```c
+/* loongarch/cache.c */
+#include <cacheflush.h>
+
+/* Cache operations. */
+void local_flush_icache_range(unsigned long start, unsigned long end)
+{
+	asm volatile ("\tibar 0\n"::);
+}
+```
+
+编写例外与中断处理入口程序C语言部分，注意这里修改了`do_irq()`函数的接口，后面会调整一些体系结构无关代码：
+
+```c
+/* loongarch/trap.c */
+extern void do_irq(struct pt_regs *regs, uint64_t virq);
+
+/**
+ * hwirq_to_virq - 硬件中断号转换为虚拟中断号
+ * @hwirq: 硬件中断号
+ */
+static unsigned long hwirq_to_virq(unsigned long hwirq)
+{
+	return EXCCODE_INT_START + hwirq;
+}
+
+/**
+ * do_vint - 中断处理入口程序（C语言部分）
+ * @regs: 指向中断栈内容
+ * @sp: 中断栈指针
+ * regs == sp
+ */
+void do_vint(struct pt_regs *regs, unsigned long sp)
+{
+	unsigned long hwirq = *(unsigned long *)regs;
+	unsigned long virq;
+
+	virq = hwirq_to_virq(hwirq);
+	do_irq(regs, virq);
+}
+```
+
+编写例外与中断处理程序初始化：
+
+```c
+/* loongarch/trap.c */
+extern void *vector_table[];
+
+/**
+ * set_handler - 设置例外处理程序句柄
+ *
+ * @offset: 相对于例外处理程序入口地址的偏移量
+ * @addr: 例外处理程序地址
+ * @size: 例外处理程序大小
+ */
+void set_handler(unsigned long offset, void *addr, unsigned long size)
+{
+	memcpy((void *)eentry + offset, addr, size);
+	local_flush_icache_range(eentry + offset, eentry + offset + size);
+}
+
+/**
+ * trap_init - 例外与中断处理初始化
+ */
+void trap_init(void)
+{
+	unsigned long i;
+	void *vector_start;
+	unsigned long tcfg = 0x01000000UL | (1U << 0) | (1U << 1);
+	unsigned long ecfg;
+
+	/**
+	 * 清空中断状态
+	 */
+	clear_csr_ecfg(ECFG0_IM);
+	clear_csr_estat(ESTATF_IP);
+
+	/**
+	 * 初始化中断处理入口程序
+	 */
+	for (i = EXCCODE_INT_START; i < EXCCODE_INT_END; i++) {
+		vector_start = vector_table[i - EXCCODE_INT_START];
+		set_handler(i * VECSIZE, vector_start, VECSIZE);
+	}
+
+	local_flush_icache_range(eentry, eentry + 0x400);
+
+	write_csr_tcfg(tcfg);
+	ecfg = read_csr_ecfg();
+	change_csr_ecfg(CSR_ECFG_IM, ecfg | 0x1 << 11);
+}
+```
+
+接下来，调整体系结构无关代码，现在例外与中断处理函数的接口变了，所以修改一下函数指针声明。为了不影响x86架构的代码，使用条件编译避免修改x86架构的指针声明。并且将体系结构无关代码的初始化函数换一个函数名，即`irq_init()`函数：
+
+```c
+/* kernel/interrupt.h */
+#ifndef CONFIG_LOONGARCH64
+
+typedef void* intr_handler;
+void idt_init(void);
+
+#else
+
+#include <pt_regs.h>
+
+typedef void (*intr_handler)(struct pt_regs *regs);
+void irq_init(void);
+
+#endif
+```
+
+修改体系结构无关代码中，中断处理程序初始化函数：
+
+```c
+/* kernel/irq.c */
+void irq_init(void)
+{
+	exception_init();
+	register_handler(EXCCODE_TIMER, timer_interrupt);
+
+	printk("irq_init done\n");
+}
+```
+
+修改`do_irq()`函数：
+
+```c
+/* kernel/irq.c */
+void do_irq(struct pt_regs *regs, uint64_t virq)
+{
+	// printk("virq = %d ", virq);
+	intr_table[virq](regs);
+}
+```
+
+修改通用中断处理程序：
+
+```c
+/* kernel/irq.c */
+static void general_intr_handler(struct pt_regs *regs)
+{
+	unsigned long hwirq = *(unsigned long *)regs;
+	unsigned long virq = EXCCODE_INT_START + hwirq;
+	printk("!!!!!!!      exception message begin  !!!!!!!!\n");
+	printk("intr_table[%d]: %s happened", intr_name[virq]);
+	printk("\n!!!!!!!      exception message end    !!!!!!!!\n");
+	while(1);
+}
+```
+
+修改临时的时钟中断处理程序：
+
+```c
+/* kernel/irq.c */
+void timer_interrupt(struct pt_regs *regs)
+{
+	printk("timer interrupt\n");
+	/* ack */
+	write_csr_ticlr(read_csr_ticlr() | (0x1 << 0));
+}
+```
+
+删除`trap_handler()`函数、`trap_entry.S`文件。删除trap\_entry.S文件之后，在`Makfile`中也删除`$(BUILD_DIR)/trap_entry.o`编译目标。最后在`init_all()`函数中进行测试：
+
+```c
+/* kernel/init.c */
+#ifdef CONFIG_LOONGARCH64
+#include <setup.h>
+#include <ns16550a.h>
+#endif
+
+#ifdef CONFIG_LOONGARCH64
+extern void irq_init(void);
+#endif
+
+/*负责初始化所有模块 */
+void init_all()
+{
+	char str[] = "os-loongson";
+	int a = 1, b = 16;
+#ifdef CONFIG_LOONGARCH64
+	serial_ns16550a_init(9600);
+	put_str("hello os-loongson\n");
+#endif
+	put_str("init_all\n");
+	printk("hello %s-%c%d.%d\n", str, 'v', 0, a);
+	printk("init_all: 0x%x\n", b);
+#ifndef CONFIG_LOONGARCH64
+	idt_init();	     // 初始化中断
+#else
+	setup_arch();
+	trap_init();
+	irq_init();
+	intr_enable();
+#endif
+	while(1);
+	// mem_init();	     // 初始化内存管理系统
+	// thread_init();    // 初始化线程相关结构
+	// timer_init();     // 初始化PIT
+	// console_init();   // 控制台初始化最好放在开中断之前
+	// keyboard_init();  // 键盘初始化
+	// tss_init();       // tss初始化
+	// syscall_init();   // 初始化系统调用
+	// intr_enable();    // 后面的ide_init需要打开中断
+	// ide_init();	     // 初始化硬盘
+	// filesys_init();   // 初始化文件系统
+}
+```
